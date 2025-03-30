@@ -12,12 +12,12 @@ Project requirements:
 
 technical details:
 
-1. stack should be in Rust full-stack - either with dioxus full stack, or yew + actix
+1. stack should be in Rust full-stack - with yew + actix
 
 2. login flow should use Twilio for the SMS.
 
 3. database layer should be dead simple and easy to back-up and restore, with minimal administration, Sled is a good choice, this will have a small number of users. I'm open to other options as well
 
-4. If possible, deployment should consist of copying a single binary - make it as atomic as possible.
+4. If possible, deployment should consist of copying a single binary - make it as atomic as possible. I want the back-end to build with all the static (wasm) files included and serve them from within itself, so all I need to do is run the binary on my server.
 
-read this file and respond with your overall plan.
+read this file and respond with your overall plan, a script to create the project skeleton with all empty files, and a nix flake for a development environment.
