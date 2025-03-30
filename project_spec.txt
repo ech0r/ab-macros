@@ -1,0 +1,23 @@
+Project requirements:
+
+1. atomic-age inspired or neubrutalist aesthetic PWA for tracking macros and meals on an animal-based diet. This would only include meat and fruit, and dairy.
+
+2. front-end needs to be responsive, work on any modern mobile device.
+
+3. users would need to be able to record meals and track micronutrients, similar to cronometer.
+
+4. login flow would be with an OTP SMS code sent to their phone, no other user data is recorded other than their meals.
+
+5. overall nutrient reports for the day/week/month should be available - along with comparison to optimal/daily targets.
+
+technical details:
+
+1. stack should be in Rust full-stack - either with dioxus full stack, or yew + actix
+
+2. login flow should use Twilio for the SMS.
+
+3. database layer should be dead simple and easy to back-up and restore, with minimal administration, Sled is a good choice, this will have a small number of users. I'm open to other options as well
+
+4. If possible, deployment should consist of copying a single binary - make it as atomic as possible.
+
+read this file and respond with your overall plan.
