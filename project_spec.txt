@@ -20,4 +20,7 @@ technical details:
 
 4. If possible, deployment should consist of copying a single binary - make it as atomic as possible. I want the back-end to build with all the static (wasm) files included and serve them from within itself, so all I need to do is run the binary on my server.
 
-read this file and respond with your overall plan, a script to create the project skeleton with all empty files, and a nix flake for a development environment.
+Read this file and respond with:
+1. your overall plan
+2. a script to create the project skeleton with empty files, this bash script should not add any content to the files, we will do that later, I just want it to touch them for easy editing later on.
+3. A nix flake for a development environment.
