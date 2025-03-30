@@ -20,40 +20,4 @@ technical details:
 
 4. If possible, deployment should consist of copying a single binary - make it as atomic as possible. I want the back-end to build with all the static (wasm) files included and serve them from within itself, so all I need to do is run the binary on my server.
 
-Read this file and respond with:
-1. your overall plan
-2. a script to create the project skeleton with empty files, this bash script should not add any content to the files, we will do that later, I just want it to touch them for easy editing later on.
-3. A nix flake for a development environment.
-
-Overall Plan
-
-Architecture:
-
-Frontend: Yew for WASM-based UI
-Backend: Actix-web for serving the API and static files
-Database: Sled for simple, embedded storage
-Authentication: Twilio for SMS OTP
-
-
-Project Structure:
-
-backend/: Actix-web server, Twilio integration, Sled DB
-frontend/: Yew application with components for tracking meals
-shared/: Types shared between frontend and backend
-migrations/: Database schema and initial data
-
-
-Development Workflow:
-
-Use Trunk for the frontend development server
-Use Cargo for building the backend
-Final build will embed the frontend WASM into the backend binary
-
-
-Feature Implementation:
-
-User authentication with SMS OTP
-Food database with nutrition information
-Meal logging and tracking
-Reports and visualizations for nutrient intake
-Comparison to optimal targets
+5. keep code base as minimal as possible - lets build things simply. 
