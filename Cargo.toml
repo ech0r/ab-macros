@@ -1,6 +1,23 @@
-[package]
-name = "ab-macros"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [
+    "backend",
+    "frontend",
+    "shared",
+]
+resolver = "2"
 
-[dependencies]
+[workspace.package]
+authors = ["Your Name <your.email@example.com>"]
+edition = "2021"
+repository = "https://github.com/yourusername/ab-macros"
+license = "MIT"
+
+[profile.release]
+# Optimize for size
+opt-level = 's'
+# Enable link-time optimization
+lto = true
+# Enable code generation units to parallelize compilation
+codegen-units = 1
+# Strip debug symbols
+strip = true
