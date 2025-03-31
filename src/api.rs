@@ -1,11 +1,10 @@
 use actix_web::{web, HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use chrono::{Duration, Utc, DateTime};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::db::AppDb;
-use crate::models::{FoodItem, Meal, MealItem, NutrientSummary, NutrientTargets, UserProfile};
+use crate::models::{FoodItem, Meal, MealItem, NutrientTargets, UserProfile};
 use crate::auth::Claims;
 
 // Configure API routes
@@ -94,7 +93,7 @@ async fn get_foods() -> impl Responder {
 // Get user's meals for a date range
 async fn get_meals(
     db: web::Data<AppDb>,
-    claims: web::ReqData<Claims>,
+    claims: Claims,
     query: web::Query<TimeRangeQuery>,
 ) -> impl Responder {
     let user_id = &claims.sub;
@@ -108,8 +107,7 @@ async fn get_meals(
         Ok(meal_data) => {
             let meals: Vec<Meal> = meal_data
                 .iter()
-                .filter_map(|(timestamp, data)| {
-                    let timestamp = *timestamp;
+                .filter_map(|(_timestamp, data)| {
                     serde_json::from_slice::<Meal>(data).ok()
                 })
                 .collect();
@@ -128,7 +126,7 @@ async fn get_meals(
 // Add a new meal
 async fn add_meal(
     db: web::Data<AppDb>,
-    claims: web::ReqData<Claims>,
+    claims: Claims,
     req: web::Json<AddMealRequest>,
 ) -> impl Responder {
     let user_id = claims.sub.clone();
@@ -166,7 +164,7 @@ async fn add_meal(
 // Delete a meal
 async fn delete_meal(
     _db: web::Data<AppDb>,
-    _claims: web::ReqData<Claims>,
+    _claims: Claims,
     _path: web::Path<String>,
 ) -> impl Responder {
     // To be implemented
@@ -178,7 +176,7 @@ async fn delete_meal(
 // Get nutrient summary for a time period
 async fn get_nutrient_summary(
     _db: web::Data<AppDb>,
-    _claims: web::ReqData<Claims>,
+    _claims: Claims,
     _query: web::Query<TimeRangeQuery>,
 ) -> impl Responder {
     // To be implemented
@@ -190,7 +188,7 @@ async fn get_nutrient_summary(
 // Get user's nutrient targets
 async fn get_targets(
     _db: web::Data<AppDb>,
-    _claims: web::ReqData<Claims>,
+    _claims: Claims,
 ) -> impl Responder {
     // To be implemented
     HttpResponse::NotImplemented().json(serde_json::json!({
@@ -201,7 +199,7 @@ async fn get_targets(
 // Update user's nutrient targets
 async fn update_targets(
     _db: web::Data<AppDb>,
-    _claims: web::ReqData<Claims>,
+    _claims: Claims,
     _targets: web::Json<NutrientTargets>,
 ) -> impl Responder {
     // To be implemented
@@ -213,7 +211,7 @@ async fn update_targets(
 // Get user profile
 async fn get_profile(
     _db: web::Data<AppDb>,
-    claims: web::ReqData<Claims>,
+    claims: Claims,
 ) -> impl Responder {
     // Simple profile
     let profile = UserProfile {

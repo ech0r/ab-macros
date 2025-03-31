@@ -12,6 +12,7 @@ dependencies = [
  "actix-web",
  "base64 0.21.7",
  "chrono",
+ "copy_dir",
  "dotenv",
  "env_logger",
  "futures",
@@ -34,6 +35,7 @@ name = "ab-macros-frontend"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "console_error_panic_hook",
  "getrandom 0.2.15",
  "gloo",
  "gloo-net 0.2.6",
@@ -531,6 +533,15 @@ dependencies = [
  "percent-encoding",
  "time",
  "version_check",
+]
+
+[[package]]
+name = "copy_dir"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "543d1dd138ef086e2ff05e3a48cf9da045da2033d16f8538fd76b86cd49b2ca3"
+dependencies = [
+ "walkdir",
 ]
 
 [[package]]

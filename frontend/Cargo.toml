@@ -5,6 +5,10 @@ edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "Frontend for animal-based diet macro tracking PWA"
 
+# Required for wasm-pack
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 yew = { version = "0.20", features = ["csr"] }
 yew-router = "0.17"
@@ -39,3 +43,4 @@ getrandom = { version = "0.2", features = ["js"] }
 log = "0.4"
 wasm-logger = "0.2"
 stylist = { version = "0.12", features = ["yew"] }
+console_error_panic_hook = "0.1.7"

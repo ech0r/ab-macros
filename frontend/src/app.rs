@@ -1,6 +1,7 @@
 use yew::prelude::*;
 use yew_router::prelude::*;
 
+// Import your pages
 use crate::pages::{
     HomePage, LoginPage, MealEntryPage, MealListPage, 
     NutrientReportPage, NotFoundPage, ProfilePage

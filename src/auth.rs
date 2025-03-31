@@ -1,34 +1,56 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpResponse, Responder, Error, FromRequest, HttpRequest, dev};
+use actix_web::error::{ErrorUnauthorized};
+use actix_web::HttpMessage; // Add this import for extensions()
 use serde::{Deserialize, Serialize};
 use rand::Rng;
 use jsonwebtoken::{encode, Header, EncodingKey};
 use std::env;
 use chrono::{Duration, Utc};
 use twilio::{Client, OutboundMessage};
+use futures::future::ready;
 
 use crate::db::AppDb;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PhoneRequest {
-    phone: String,
-}
+// Test account constants
+const TEST_PHONE: &str = "123";
+const TEST_CODE: &str = "123456";
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VerifyRequest {
-    phone: String,
-    code: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TokenResponse {
-    token: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: String, // Subject (user phone)
     pub exp: usize,  // Expiration time
     pub iat: usize,  // Issued at
+}
+
+// Implement FromRequest for Claims to extract it from request extensions
+impl FromRequest for Claims {
+    type Error = Error;
+    type Future = futures::future::Ready<Result<Self, Self::Error>>;
+    
+    fn from_request(req: &HttpRequest, _: &mut dev::Payload) -> Self::Future {
+        if let Some(claims) = req.extensions().get::<Claims>() {
+            ready(Ok(claims.clone()))
+        } else {
+            ready(Err(ErrorUnauthorized("Not authorized")))
+        }
+    }
+}
+
+// Request structs
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PhoneRequest {
+    pub phone: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VerifyRequest {
+    pub phone: String,
+    pub code: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenResponse {
+    pub token: String,
 }
 
 // Configure auth routes
@@ -51,9 +73,28 @@ async fn send_code(
     db: web::Data<AppDb>,
     req: web::Json<PhoneRequest>,
 ) -> impl Responder {
-    // Normalize phone number
+    // Check if this is our test account (using raw input to make it easier to test)
+    if req.phone == TEST_PHONE {
+        log::info!("Using test account - bypassing SMS");
+        
+        // Store the test code in the database
+        let phone = normalize_phone(&req.phone);
+        if let Err(e) = db.store_verification(&phone, TEST_CODE, Utc::now().timestamp() + 600) {
+            log::error!("Failed to store test verification: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to store verification"
+            }));
+        }
+        
+        return HttpResponse::Ok().json(serde_json::json!({
+            "message": "Verification code sent (TEST MODE)"
+        }));
+    }
+    
+    // Normalize phone number for regular accounts
     let phone = normalize_phone(&req.phone);
     
+    // For non-test accounts, continue with regular flow
     // Generate 6-digit code
     let code = generate_code();
     
@@ -69,12 +110,23 @@ async fn send_code(
             "error": "Failed to store verification"
         }));
     }
+
+    // Check if we're in dev mode
+    if env::var("DEV_MODE").unwrap_or_default() == "1" {
+        log::info!("DEV MODE: Skipping SMS, verification code: {}", code);
+        return HttpResponse::Ok().json(serde_json::json!({
+            "message": "Verification code sent (DEV MODE)"
+        }));
+    }
     
-    // Send SMS using Twilio
+    // Try to send SMS via Twilio
     match send_sms(&phone, &code).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({
-            "message": "Verification code sent"
-        })),
+        Ok(_) => {
+            log::info!("SMS sent successfully");
+            HttpResponse::Ok().json(serde_json::json!({
+                "message": "Verification code sent"
+            }))
+        },
         Err(e) => {
             log::error!("Failed to send SMS: {}", e);
             HttpResponse::InternalServerError().json(serde_json::json!({
@@ -89,6 +141,23 @@ async fn verify_code(
     db: web::Data<AppDb>,
     req: web::Json<VerifyRequest>,
 ) -> impl Responder {
+    // Check if this is the test account
+    if req.phone == TEST_PHONE && req.code == TEST_CODE {
+        log::info!("Test account login successful");
+        
+        // Generate JWT token
+        match create_token(&normalize_phone(TEST_PHONE)) {
+            Ok(token) => return HttpResponse::Ok().json(TokenResponse { token }),
+            Err(e) => {
+                log::error!("Token generation failed: {}", e);
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Failed to generate token"
+                }));
+            }
+        }
+    }
+    
+    // Regular verification flow
     let phone = normalize_phone(&req.phone);
     
     match db.verify_code(&phone, &req.code) {
@@ -153,17 +222,66 @@ fn normalize_phone(phone: &str) -> String {
 
 // Send SMS via Twilio
 async fn send_sms(to: &str, code: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let account_sid = env::var("TWILIO_ACCOUNT_SID").expect("TWILIO_ACCOUNT_SID must be set");
-    let auth_token = env::var("TWILIO_AUTH_TOKEN").expect("TWILIO_AUTH_TOKEN must be set");
-    let from_number = env::var("TWILIO_FROM_NUMBER").expect("TWILIO_FROM_NUMBER must be set");
+    // Check if this is the test account
+    if to == normalize_phone(TEST_PHONE) {
+        log::info!("Test account - no SMS needed");
+        return Ok(());
+    }
     
+    // Get Twilio credentials
+    let account_sid = match env::var("TWILIO_ACCOUNT_SID") {
+        Ok(sid) => sid,
+        Err(e) => {
+            log::error!("Missing TWILIO_ACCOUNT_SID: {}", e);
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "TWILIO_ACCOUNT_SID not set"
+            )));
+        }
+    };
+    
+    let auth_token = match env::var("TWILIO_AUTH_TOKEN") {
+        Ok(token) => token,
+        Err(e) => {
+            log::error!("Missing TWILIO_AUTH_TOKEN: {}", e);
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "TWILIO_AUTH_TOKEN not set"
+            )));
+        }
+    };
+    
+    let from_number = match env::var("TWILIO_FROM_NUMBER") {
+        Ok(number) => number,
+        Err(e) => {
+            log::error!("Missing TWILIO_FROM_NUMBER: {}", e);
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "TWILIO_FROM_NUMBER not set"
+            )));
+        }
+    };
+    
+    log::info!("Sending SMS to {} with code {}", to, code);
+    
+    // Create Twilio client and message
     let client = Client::new(&account_sid, &auth_token);
+    let message_text = format!("Your AB Macros verification code: {}", code);
     let message = OutboundMessage::new(
         &from_number,
         to,
-        &format!("Your AB Macros verification code: {}", code),
+        &message_text,
     );
     
-    client.send_message(message).await?;
-    Ok(())
+    // Send the message
+    match client.send_message(message).await {
+        Ok(_) => {
+            log::info!("SMS sent successfully");
+            Ok(())
+        },
+        Err(e) => {
+            log::error!("Twilio error: {:?}", e);
+            Err(Box::new(e))
+        }
+    }
 }

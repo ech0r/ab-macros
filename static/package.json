@@ -1,0 +1,19 @@
+{
+  "name": "ab-macros-frontend",
+  "type": "module",
+  "collaborators": [
+    "Your Name <your.email@example.com>"
+  ],
+  "description": "Frontend for animal-based diet macro tracking PWA",
+  "version": "0.1.0",
+  "files": [
+    "ab_macros_frontend_bg.wasm",
+    "ab_macros_frontend.js",
+    "ab_macros_frontend.d.ts"
+  ],
+  "main": "ab_macros_frontend.js",
+  "types": "ab_macros_frontend.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

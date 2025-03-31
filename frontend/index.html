@@ -56,6 +56,15 @@
             animation: spin 1s linear infinite;
         }
         
+        #error-message {
+            color: #F44336;
+            text-align: center;
+            margin-top: 20px;
+            display: none;
+            max-width: 80%;
+            font-weight: bold;
+        }
+        
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
@@ -66,29 +75,67 @@
     <div id="loading">
         <div class="loading-title">AB MACROS</div>
         <div class="loading-spinner"></div>
+        <div id="error-message"></div>
     </div>
     
     <div id="app"></div>
     
-    <script>
-        // Hide loading screen when the app is ready
-        document.addEventListener('DOMContentLoaded', () => {
-            const app = document.getElementById('app');
-            const observer = new MutationObserver((mutations) => {
-                if (app.children.length > 0) {
-                    document.getElementById('loading').style.display = 'none';
-                    observer.disconnect();
-                }
-            });
-            
-            observer.observe(app, { childList: true });
-            
-            // Fallback if app doesn't load in 5 seconds
-            setTimeout(() => {
+    <script type="module">
+        // Import and initialize WASM module
+        const initApp = async () => {
+            try {
+                // Import the wasm module
+                const wasm = await import('./ab_macros_frontend.js');
+                
+                // Initialize the module
+                await wasm.default();
+                
+                // Run the application
+                await wasm.run_app();
+                
+                console.log('WASM initialization complete');
+            } catch (error) {
+                console.error('Failed to initialize WASM module:', error);
+                document.getElementById('error-message').textContent = 
+                    `Error initializing app: ${error.message}`;
+                document.getElementById('error-message').style.display = 'block';
+            }
+        };
+        
+        // Start initialization
+        initApp();
+        
+        // Monitor for app content and hide loading screen when ready
+        const app = document.getElementById('app');
+        const observer = new MutationObserver((mutations) => {
+            // Check if any content was added to the app element
+            if (app.children.length > 0 || app.innerHTML.trim() !== '') {
+                console.log('App content detected, hiding loading screen');
                 document.getElementById('loading').style.display = 'none';
                 observer.disconnect();
-            }, 5000);
+            }
         });
+        
+        // Start observing the app element for changes
+        observer.observe(app, { 
+            childList: true,
+            subtree: true,
+            characterData: true
+        });
+        
+        // Fallback timeout to hide loading screen
+        setTimeout(() => {
+            console.log('Timeout reached, checking app content...');
+            if (app.children.length === 0 && app.innerHTML.trim() === '') {
+                document.getElementById('error-message').textContent = 
+                    'App initialization timed out. Please reload the page or check console for errors.';
+                document.getElementById('error-message').style.display = 'block';
+                document.querySelector('.loading-spinner').style.display = 'none';
+            } else {
+                document.getElementById('loading').style.display = 'none';
+            }
+            observer.disconnect();
+        }, 10000);
     </script>
 </body>
 </html>

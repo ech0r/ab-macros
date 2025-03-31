@@ -12,6 +12,7 @@ description = "An animal-based diet macro tracking PWA"
 actix-web = "4.3"
 actix-files = "0.6"
 actix-cors = "0.6"
+actix-embed = "0.1"
 sled = "0.34"
 dotenv = "0.15"
 env_logger = "0.10"
@@ -30,9 +31,6 @@ base64 = "0.21"
 twilio = "1.0"
 reqwest = { version = "0.11", features = ["json"] }
 
-# For serving embedded static files
-actix-embed = "0.1.0"
-
 [workspace]
 members = [
     "frontend"
@@ -42,3 +40,11 @@ members = [
 lto = true
 opt-level = 'z'  # Optimize for size
 codegen-units = 1
+
+# Build script to include frontend in the backend binary
+[build-dependencies]
+copy_dir = "0.1"
+
+# Enable the following custom macro for embedding assets
+[features]
+embed_frontend = []

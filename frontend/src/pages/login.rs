@@ -10,7 +10,7 @@ use crate::api;
 use crate::app::Route;
 use crate::styles::{card, colors, primary_button};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Copy)]  // Added Copy trait here
 enum AuthStep {
     EnterPhone,
     EnterCode,
@@ -141,7 +141,7 @@ pub fn login_page(_props: &Props) -> Html {
         
         use_effect_with_deps(
             move |current_step| {
-                let auth_step_value = **current_step;
+                let auth_step_value = **current_step;  // Keep double dereference since AuthStep is now Copy
                 let timeout = Timeout::new(100, move || {
                     match auth_step_value {
                         AuthStep::EnterPhone => {
@@ -195,7 +195,7 @@ pub fn login_page(_props: &Props) -> Html {
                 <div class="col" style="max-width: 480px; width: 100%;">
                     <div style="margin-bottom: 1rem; padding: 0.75rem; background-color: #FFD07F; border: 2px solid #FF9800; text-align: center;">
                         <p style="margin: 0; font-weight: bold;">
-                            {"Development Mode: Use phone +15555555555 and code 123456"}
+                            {"Development Mode: Use phone number '123' and code '123456'"}
                         </p>
                     </div>
                     <div class={card_style}>
