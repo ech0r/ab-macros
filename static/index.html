@@ -1,0 +1,244 @@
+<!DOCTYPE html<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Neubrutalist Animal Macro Tracker</title>
+  <link rel="stylesheet" href="main.css">
+
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="logo">ANIMAL-BASED MACRO TRACKER</div>
+      <button class="nav-button">MY PROFILE</button>
+    </header>
+    
+    <main class="dashboard">
+      <section class="panel">
+        <h2 class="panel-header">Add Meal</h2>
+        
+        <div class="food-selector">
+            <label class="selector-label">Select Food Type</label>
+            <div class="food-buttons">
+              <button class="food-button active">
+                <span class="food-icon">🥩</span>
+                <span>Beef</span>
+              </button>
+              <button class="food-button">
+                <span class="food-icon">🐓</span>
+                <span>Poultry</span>
+              </button>
+              <button class="food-button">
+                <span class="food-icon">🐟</span>
+                <span>Fish</span>
+              </button>
+              <button class="food-button">
+                <span class="food-icon">🥚</span>
+                <span>Eggs</span>
+              </button>
+              <button class="food-button">
+                <span class="food-icon">🥓</span>
+                <span>Pork</span>
+              </button>
+              <button class="food-button">
+                <span class="food-icon">🧀</span>
+                <span>Dairy</span>
+              </button>
+              <button class="food-button">
+                <span class="food-icon">🍎</span>
+                <span>Fruits</span>
+              </button>
+              <button class="food-button">
+                <span class="food-icon">🍯</span>
+                <span>Honey</span>
+              </button>
+            </div>
+          </div>
+          
+          <div class="meal-form">
+            <div class="input-group">
+              <label class="input-label">
+                <span class="animal-icon">🍖</span>
+                Food
+              </label>
+              <select class="select-field">
+                <option>Ribeye Steak</option>
+                <option>Ground Beef</option>
+                <option>Beef Liver</option>
+                <option>Brisket</option>
+                <option>Custom...</option>
+              </select>
+            </div>
+          
+            <div class="input-group">
+              <label class="input-label">
+                <span class="animal-icon">⚖️</span>
+                Amount (g)
+              </label>
+              <input type="number" class="input-field" placeholder="0">
+            </div>
+          
+            <div class="macro-preview">
+              <div class="macro-preview-item">
+                <span class="preview-label">Protein</span>
+                <span class="preview-value">45g</span>
+              </div>
+              <div class="macro-preview-item">
+                <span class="preview-label">Fat</span>
+                <span class="preview-value">38g</span>
+              </div>
+              <div class="macro-preview-item">
+                <span class="preview-label">Calories</span>
+                <span class="preview-value">530</span>
+              </div>
+            </div>
+          </div>
+          
+          <button class="submit-button">ADD FOOD</button>
+        
+        <div class="animal-container">
+          <div class="animal-graphic" id="animal1">🐄</div>
+          <div class="animal-graphic" id="animal2">🐓</div>
+          <div class="animal-graphic" id="animal3">🐟</div>
+          <div class="animal-graphic" id="animal4">🍎</div>
+          <div class="animal-graphic" id="animal5">🍓</div>
+          <div class="animal-graphic" id="animal6">🧀</div>
+          <div class="animal-graphic" id="animal7">🥛</div>
+          <div class="animal-graphic" id="animal8">🍯</div>
+        </div>
+      </section>
+      
+      <section class="panel">
+        <h2 class="panel-header">Today's Progress</h2>
+        
+        <div class="macro-display">
+          <div class="macro-card">
+            <div class="macro-title">Protein</div>
+            <div class="macro-value">120g / 180g</div>
+            <div class="progress-container">
+              <div class="progress-bar" style="width: 65%;"></div>
+            </div>
+          </div>
+          
+          <div class="macro-card">
+            <div class="macro-title">Fat</div>
+            <div class="macro-value">75g / 100g</div>
+            <div class="progress-container">
+              <div class="progress-bar" style="width: 75%;"></div>
+            </div>
+          </div>
+          
+          <div class="macro-card">
+            <div class="macro-title">Calories</div>
+            <div class="macro-value">1500 / 2200</div>
+            <div class="progress-container">
+              <div class="progress-bar" style="width: 68%;"></div>
+            </div>
+          </div>
+          
+          <div class="macro-card">
+            <div class="macro-title">Animal Score</div>
+            <div class="macro-value">72</div>
+            <div class="progress-container">
+              <div class="progress-bar" style="width: 72%;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+      
+      <section class="panel history-panel">
+        <h2 class="panel-header">Recent History</h2>
+        
+        <div class="history-cards">
+          <div class="history-card">
+            <div class="history-date">Yesterday</div>
+            <div class="history-stats">
+              <div class="history-stat">
+                <span class="history-label">Protein</span>
+                <span class="history-value">175g</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Fat</span>
+                <span class="history-value">95g</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Calories</span>
+                <span class="history-value">2150</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Score</span>
+                <span class="history-value">89</span>
+              </div>
+            </div>
+          </div>
+          
+          <div class="history-card">
+            <div class="history-date">April 4</div>
+            <div class="history-stats">
+              <div class="history-stat">
+                <span class="history-label">Protein</span>
+                <span class="history-value">162g</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Fat</span>
+                <span class="history-value">88g</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Calories</span>
+                <span class="history-value">2050</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Score</span>
+                <span class="history-value">84</span>
+              </div>
+            </div>
+          </div>
+          
+          <div class="history-card">
+            <div class="history-date">April 3</div>
+            <div class="history-stats">
+              <div class="history-stat">
+                <span class="history-label">Protein</span>
+                <span class="history-value">145g</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Fat</span>
+                <span class="history-value">78g</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Calories</span>
+                <span class="history-value">1920</span>
+              </div>
+              <div class="history-stat">
+                <span class="history-label">Score</span>
+                <span class="history-value">76</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // Simple animation for the animal graphics
+    const animals = document.querySelectorAll('.animal-graphic');
+    
+    function animateAnimals() {
+      animals.forEach(animal => {
+        const randomY = Math.random() * 10 - 5;
+        const randomRotate = Math.random() * 6 - 3;
+        
+        animal.style.transform = `translateY(${randomY}px) rotate(${randomRotate}deg)`;
+      });
+      
+      setTimeout(animateAnimals, 2000);
+    }
+    
+    animateAnimals();
+  </script>
+</body>
+</html>
