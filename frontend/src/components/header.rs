@@ -1,8 +1,8 @@
 // src/components/header.rs
-use yew::{function_component, classes, html, Html, use_effect_with_deps, use_state, Callback};
+use yew::{function_component, classes, html, Html, use_effect_with, use_state, Callback};
 use gloo_net::http::Request;
 use serde::Deserialize;
-use wasm_bindgen::prelude::*;
+use web_sys::console;
 
 #[derive(Deserialize, Clone, PartialEq, Debug)]
 struct UserInfo {
@@ -20,7 +20,8 @@ pub fn Header() -> Html {
         let user = user.clone();
         let error = error.clone();
         
-        use_effect_with_deps(
+        use_effect_with(
+            (),
             move |_| {
                 wasm_bindgen_futures::spawn_local(async move {
                     match Request::get("/api/me")
@@ -47,7 +48,6 @@ pub fn Header() -> Html {
                 });
                 || ()
             },
-            (),
         );
     }
     

@@ -2,4 +2,6 @@ target
 dist
 release
 .env
+data.db
+frontend-dist
 

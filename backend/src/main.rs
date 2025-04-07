@@ -1,7 +1,6 @@
-// src/main.rs
 use actix_web::{
-    dev::Payload, error, get, http, middleware, post, web, App, Error, FromRequest, HttpMessage,
-    HttpRequest, HttpResponse, HttpServer, Responder,
+    dev::Service, get, http, middleware, post, web, App, Error, 
+    FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use actix_session::{Session, SessionMiddleware, storage::CookieSessionStore};
 use actix_cors::Cors;
@@ -9,13 +8,17 @@ use actix_web::cookie::{Key, SameSite};
 use dotenv::dotenv;
 use futures::future::{ready, Ready};
 use reqwest::Client;
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use sled::Db;
 use std::env;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
+
+// Embed frontend assets
+#[derive(RustEmbed)]
+#[folder = "../frontend-dist/"]
+struct FrontendAssets;
 
 // AppState will hold our database and HTTP client
 struct AppState {
@@ -60,56 +63,14 @@ impl FromRequest for AuthenticatedUser {
     type Error = Error;
     type Future = Ready<Result<Self, Self::Error>>;
 
-    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+    fn from_request(req: &HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
         // Check if the user is authenticated via session
         if let Some(user) = req.extensions().get::<User>() {
             ready(Ok(AuthenticatedUser(user.clone())))
         } else {
-            ready(Err(error::ErrorUnauthorized("Unauthorized")))
+            ready(Err(actix_web::error::ErrorUnauthorized("Unauthorized")))
         }
     }
-}
-
-// Auth middleware
-fn auth_middleware<S, B>(
-    req: HttpRequest,
-    session: Session,
-    srv: actix_web::dev::Service<HttpRequest, Response = actix_web::dev::ServiceResponse<B>, Error = Error>,
-) -> Pin<Box<dyn Future<Output = Result<actix_web::dev::ServiceResponse<B>, Error>>>> {
-    let fut = async move {
-        // Skip auth for login-related endpoints
-        let path = req.path();
-        if path == "/api/login" || path == "/api/callback" || path == "/api/auth-url" {
-            return srv.call(req).await;
-        }
-
-        // Check if the user is authenticated
-        if let Ok(Some(user_json)) = session.get::<String>("user") {
-            match serde_json::from_str::<User>(&user_json) {
-                Ok(user) => {
-                    // Check if the token is expired (in a real app, you'd refresh it)
-                    let current_time = chrono::Utc::now().timestamp() as u64;
-                    if user.expires_at > current_time {
-                        // Add user to request extensions
-                        req.extensions_mut().insert(user);
-                        return srv.call(req).await;
-                    }
-                }
-                Err(_) => {}
-            }
-        }
-
-        // Not authenticated
-        Ok(actix_web::dev::ServiceResponse::new(
-            req,
-            HttpResponse::Unauthorized().json(serde_json::json!({
-                "error": "Unauthorized",
-                "message": "You must be logged in to access this resource"
-            })),
-        ))
-    };
-
-    Box::pin(fut)
 }
 
 // Get the Reddit authorization URL
@@ -134,12 +95,22 @@ async fn oauth_callback(
     data: web::Data<AppState>,
     session: Session,
 ) -> impl Responder {
-    // Get code and state from query params
+    // Get code from query params
     let query = req.query_string();
-    let mut params = web::Query::<std::collections::HashMap<String, String>>::from_query(query)
-        .unwrap_or_default();
-
-    let code = match params.remove("code") {
+    let mut query_map = std::collections::HashMap::new();
+    
+    // Manually parse the query parameters
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let mut parts = pair.split('=');
+        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+            query_map.insert(key.to_string(), value.to_string());
+        }
+    }
+    
+    let code = match query_map.get("code") {
         Some(code) => code,
         None => return HttpResponse::BadRequest().body("Missing code parameter"),
     };
@@ -147,7 +118,7 @@ async fn oauth_callback(
     // Exchange the code for an access token
     let params = [
         ("grant_type", "authorization_code"),
-        ("code", &code),
+        ("code", code),
         ("redirect_uri", &data.redirect_uri),
     ];
 
@@ -235,10 +206,24 @@ async fn oauth_callback(
 
 // Get current user info
 #[get("/api/me")]
-async fn get_me(user: AuthenticatedUser) -> impl Responder {
-    HttpResponse::Ok().json(serde_json::json!({
-        "username": user.0.username,
-        "id": user.0.id
+async fn get_me(_req: HttpRequest, session: Session) -> impl Responder {
+    // Check user from session
+    if let Ok(Some(user_json)) = session.get::<String>("user") {
+        if let Ok(user) = serde_json::from_str::<User>(&user_json) {
+            let current_time = chrono::Utc::now().timestamp() as u64;
+            if user.expires_at > current_time {
+                return HttpResponse::Ok().json(serde_json::json!({
+                    "username": user.username,
+                    "id": user.id
+                }));
+            }
+        }
+    }
+    
+    // No user or expired token
+    HttpResponse::Unauthorized().json(serde_json::json!({
+        "error": "Unauthorized",
+        "message": "You must be logged in to access this resource"
     }))
 }
 
@@ -253,10 +238,125 @@ async fn logout(session: Session) -> impl Responder {
 
 // Protected endpoint example
 #[get("/api/protected")]
-async fn protected_endpoint(user: AuthenticatedUser) -> impl Responder {
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("Hello, {}! This is a protected endpoint.", user.0.username)
+async fn protected_endpoint(_req: HttpRequest, session: Session) -> impl Responder {
+    // Check user from session
+    if let Ok(Some(user_json)) = session.get::<String>("user") {
+        if let Ok(user) = serde_json::from_str::<User>(&user_json) {
+            let current_time = chrono::Utc::now().timestamp() as u64;
+            if user.expires_at > current_time {
+                return HttpResponse::Ok().json(serde_json::json!({
+                    "message": format!("Hello, {}! This is a protected endpoint.", user.username)
+                }));
+            }
+        }
+    }
+    
+    // No user or expired token
+    HttpResponse::Unauthorized().json(serde_json::json!({
+        "error": "Unauthorized",
+        "message": "You must be logged in to access this resource"
     }))
+}
+
+// Handle embedded frontend assets
+async fn handle_embedded_assets(req: HttpRequest) -> HttpResponse {
+    let path = if req.path() == "/" {
+        // Serve index.html for root path
+        "index.html"
+    } else {
+        // Remove leading slash
+        &req.path()[1..]
+    };
+
+    // Try to find the file in embedded assets
+    match FrontendAssets::get(path) {
+        Some(content) => {
+            // Guess the MIME type based on the file extension
+            let mime_type = mime_guess::from_path(path).first_or_octet_stream();
+            
+            HttpResponse::Ok()
+                .content_type(mime_type.as_ref())
+                .body(content.data.into_owned())
+        }
+        None => {
+            // If the asset doesn't exist, try to serve index.html for client-side routing
+            match FrontendAssets::get("index.html") {
+                Some(content) => HttpResponse::Ok()
+                    .content_type("text/html")
+                    .body(content.data.into_owned()),
+                None => HttpResponse::NotFound().body("Not found"),
+            }
+        }
+    }
+}
+
+// Middleware for checking user authentication from session
+struct AuthMiddleware;
+
+impl<S> actix_web::dev::Transform<S, actix_web::dev::ServiceRequest> for AuthMiddleware
+where
+    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse, Error = Error> + 'static,
+{
+    type Response = actix_web::dev::ServiceResponse;
+    type Error = Error;
+    type Transform = AuthMiddlewareService<S>;
+    type InitError = ();
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(AuthMiddlewareService { service }))
+    }
+}
+
+pub struct AuthMiddlewareService<S> {
+    service: S,
+}
+
+impl<S> Service<actix_web::dev::ServiceRequest> for AuthMiddlewareService<S>
+where
+    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse, Error = Error> + 'static,
+{
+    type Response = actix_web::dev::ServiceResponse;
+    type Error = Error;
+    type Future = futures::future::BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    actix_web::dev::forward_ready!(service);
+
+    fn call(&self, req: actix_web::dev::ServiceRequest) -> Self::Future {
+        let path = req.path().to_string();
+        
+        // Skip auth for non-API paths and public endpoints
+        if !path.starts_with("/api/") || path == "/api/auth-url" || path == "/api/callback" || path == "/api/logout" {
+            return Box::pin(self.service.call(req));
+        }
+        
+        // Try to get the session
+        if let Some(session) = req.get_session() {
+            // Check for user in session
+            if let Ok(Some(user_json)) = session.get::<String>("user") {
+                if let Ok(user) = serde_json::from_str::<User>(&user_json) {
+                    let current_time = chrono::Utc::now().timestamp() as u64;
+                    if user.expires_at > current_time {
+                        // User is authenticated, add to request extensions
+                        req.extensions_mut().insert(user);
+                        return Box::pin(self.service.call(req));
+                    }
+                }
+            }
+        }
+        
+        // Not authenticated, return 401
+        let (request, _) = req.into_parts();
+        let response = HttpResponse::Unauthorized()
+            .json(serde_json::json!({
+                "error": "Unauthorized",
+                "message": "You must be logged in to access this resource"
+            }));
+
+        Box::pin(futures::future::ok(
+            actix_web::dev::ServiceResponse::new(request, response)
+        ))
+    }
 }
 
 #[actix_web::main]
@@ -273,7 +373,18 @@ async fn main() -> std::io::Result<()> {
     let redirect_uri = env::var("REDDIT_REDIRECT_URI").expect("REDDIT_REDIRECT_URI must be set");
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let secret_key = env::var("SECRET_KEY").unwrap_or_else(|_| Uuid::new_v4().to_string());
+    
+    // Generate a secure key for sessions (ensure it's at least 32 bytes)
+    let secret_key = env::var("SECRET_KEY").unwrap_or_else(|_| {
+        // Generate a key with enough entropy
+        format!("{}{}{}", Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+    });
+    
+    // Ensure key is at least 32 bytes
+    let mut key_data = secret_key.as_bytes().to_vec();
+    if key_data.len() < 32 {
+        key_data.resize(32, 0);
+    }
 
     // Open Sled database
     let db = Arc::new(
@@ -305,7 +416,7 @@ async fn main() -> std::io::Result<()> {
             .max_age(3600);
 
         // Create cookie key for session
-        let key = Key::from(secret_key.as_bytes());
+        let key = Key::from(&key_data);
 
         App::new()
             .wrap(middleware::Logger::default())
@@ -317,15 +428,15 @@ async fn main() -> std::io::Result<()> {
                     .build(),
             )
             .wrap(cors)
-            .wrap_fn(auth_middleware)
+            .wrap(AuthMiddleware)
             .app_data(app_state.clone())
             .service(get_auth_url)
             .service(oauth_callback)
             .service(get_me)
             .service(logout)
             .service(protected_endpoint)
-            // Serve static files from the frontend build directory
-            .service(actix_files::Files::new("/", "./dist").index_file("index.html"))
+            // Default route handler for embedded frontend assets
+            .default_service(web::to(handle_embedded_assets))
     })
     .bind(format!("{}:{}", host, port))?
     .run()
