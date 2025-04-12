@@ -2,7 +2,7 @@ use actix_web::{
     dev::Service, get, http, middleware, post, web, App, Error, 
     FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpServer, Responder,
 };
-use actix_session::{Session, SessionMiddleware, storage::CookieSessionStore};
+use actix_session::{Session, SessionMiddleware, storage::CookieSessionStore, SessionExt};
 use actix_cors::Cors;
 use actix_web::cookie::{Key, SameSite};
 use dotenv::dotenv;
@@ -64,12 +64,20 @@ impl FromRequest for AuthenticatedUser {
     type Future = Ready<Result<Self, Self::Error>>;
 
     fn from_request(req: &HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
+        // Get session
+        let session = req.get_session();
+        
         // Check if the user is authenticated via session
-        if let Some(user) = req.extensions().get::<User>() {
-            ready(Ok(AuthenticatedUser(user.clone())))
-        } else {
-            ready(Err(actix_web::error::ErrorUnauthorized("Unauthorized")))
+        if let Ok(Some(user_json)) = session.get::<String>("user") {
+            if let Ok(user) = serde_json::from_str::<User>(&user_json) {
+                let current_time = chrono::Utc::now().timestamp() as u64;
+                if user.expires_at > current_time {
+                    return ready(Ok(AuthenticatedUser(user)));
+                }
+            }
         }
+        
+        ready(Err(actix_web::error::ErrorUnauthorized("Unauthorized")))
     }
 }
 
@@ -206,25 +214,17 @@ async fn oauth_callback(
 
 // Get current user info
 #[get("/api/me")]
-async fn get_me(_req: HttpRequest, session: Session) -> impl Responder {
-    // Check user from session
-    if let Ok(Some(user_json)) = session.get::<String>("user") {
-        if let Ok(user) = serde_json::from_str::<User>(&user_json) {
-            let current_time = chrono::Utc::now().timestamp() as u64;
-            if user.expires_at > current_time {
-                return HttpResponse::Ok().json(serde_json::json!({
-                    "username": user.username,
-                    "id": user.id
-                }));
-            }
-        }
+async fn get_me(user: Option<AuthenticatedUser>) -> impl Responder {
+    match user {
+        Some(user) => HttpResponse::Ok().json(serde_json::json!({
+            "username": user.0.username,
+            "id": user.0.id
+        })),
+        None => HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "Unauthorized",
+            "message": "You must be logged in to access this resource"
+        })),
     }
-    
-    // No user or expired token
-    HttpResponse::Unauthorized().json(serde_json::json!({
-        "error": "Unauthorized",
-        "message": "You must be logged in to access this resource"
-    }))
 }
 
 // Logout endpoint
@@ -238,23 +238,9 @@ async fn logout(session: Session) -> impl Responder {
 
 // Protected endpoint example
 #[get("/api/protected")]
-async fn protected_endpoint(_req: HttpRequest, session: Session) -> impl Responder {
-    // Check user from session
-    if let Ok(Some(user_json)) = session.get::<String>("user") {
-        if let Ok(user) = serde_json::from_str::<User>(&user_json) {
-            let current_time = chrono::Utc::now().timestamp() as u64;
-            if user.expires_at > current_time {
-                return HttpResponse::Ok().json(serde_json::json!({
-                    "message": format!("Hello, {}! This is a protected endpoint.", user.username)
-                }));
-            }
-        }
-    }
-    
-    // No user or expired token
-    HttpResponse::Unauthorized().json(serde_json::json!({
-        "error": "Unauthorized",
-        "message": "You must be logged in to access this resource"
+async fn protected_endpoint(user: AuthenticatedUser) -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "message": format!("Hello, {}! This is a protected endpoint.", user.0.username)
     }))
 }
 
@@ -293,11 +279,13 @@ async fn handle_embedded_assets(req: HttpRequest) -> HttpResponse {
 // Middleware for checking user authentication from session
 struct AuthMiddleware;
 
-impl<S> actix_web::dev::Transform<S, actix_web::dev::ServiceRequest> for AuthMiddleware
+impl<S, B> actix_web::dev::Transform<S, actix_web::dev::ServiceRequest> for AuthMiddleware
 where
-    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse, Error = Error> + 'static,
+    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse<B>, Error = Error> + 'static + Clone,
+    S::Future: 'static + Send,
+    B: 'static,
 {
-    type Response = actix_web::dev::ServiceResponse;
+    type Response = actix_web::dev::ServiceResponse<B>;
     type Error = Error;
     type Transform = AuthMiddlewareService<S>;
     type InitError = ();
@@ -312,11 +300,24 @@ pub struct AuthMiddlewareService<S> {
     service: S,
 }
 
-impl<S> Service<actix_web::dev::ServiceRequest> for AuthMiddlewareService<S>
+impl<S> Clone for AuthMiddlewareService<S>
 where
-    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse, Error = Error> + 'static,
+    S: Clone,
 {
-    type Response = actix_web::dev::ServiceResponse;
+    fn clone(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+        }
+    }
+}
+
+impl<S, B> Service<actix_web::dev::ServiceRequest> for AuthMiddlewareService<S>
+where
+    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse<B>, Error = Error> + 'static,
+    S::Future: 'static + Send,
+    B: 'static,
+{
+    type Response = actix_web::dev::ServiceResponse<B>;
     type Error = Error;
     type Future = futures::future::BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -324,38 +325,43 @@ where
 
     fn call(&self, req: actix_web::dev::ServiceRequest) -> Self::Future {
         let path = req.path().to_string();
+        let service = self.service.clone();
         
         // Skip auth for non-API paths and public endpoints
         if !path.starts_with("/api/") || path == "/api/auth-url" || path == "/api/callback" || path == "/api/logout" {
-            return Box::pin(self.service.call(req));
+            return Box::pin(service.call(req));
         }
         
         // Try to get the session
-        if let Some(session) = req.get_session() {
-            // Check for user in session
+        let session = req.get_session();
+        
+        // Check for user in session
+        Box::pin(async move {
             if let Ok(Some(user_json)) = session.get::<String>("user") {
                 if let Ok(user) = serde_json::from_str::<User>(&user_json) {
                     let current_time = chrono::Utc::now().timestamp() as u64;
                     if user.expires_at > current_time {
                         // User is authenticated, add to request extensions
                         req.extensions_mut().insert(user);
-                        return Box::pin(self.service.call(req));
+                        return service.call(req).await;
                     }
                 }
             }
-        }
-        
-        // Not authenticated, return 401
-        let (request, _) = req.into_parts();
-        let response = HttpResponse::Unauthorized()
-            .json(serde_json::json!({
-                "error": "Unauthorized",
-                "message": "You must be logged in to access this resource"
-            }));
+            
+            // Not authenticated, return 401
+            let (request, _) = req.into_parts();
+            let response = HttpResponse::Unauthorized()
+                .json(serde_json::json!({
+                    "error": "Unauthorized",
+                    "message": "You must be logged in to access this resource"
+                }));
 
-        Box::pin(futures::future::ok(
-            actix_web::dev::ServiceResponse::new(request, response)
-        ))
+            // Convert to expected body type
+            Ok(actix_web::dev::ServiceResponse::new(
+                request, 
+                response.map_into_boxed_body()
+            ))
+        })
     }
 }
 
@@ -428,7 +434,6 @@ async fn main() -> std::io::Result<()> {
                     .build(),
             )
             .wrap(cors)
-            .wrap(AuthMiddleware)
             .app_data(app_state.clone())
             .service(get_auth_url)
             .service(oauth_callback)
