@@ -87,7 +87,7 @@ else
     # Start trunk in the background
     echo "Starting frontend dev server..."
     cd frontend
-    trunk serve --proxy-backend=http://localhost:8080/api/ &
+    trunk serve --proxy-backend=http://localhost:8081/api/ &
     TRUNK_PID=$!
     cd ..
     

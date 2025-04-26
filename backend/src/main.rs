@@ -1,47 +1,59 @@
-use actix_web::{
-    dev::Service, get, http, middleware, post, web, App, Error, 
-    FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpServer, Responder,
-};
-use actix_session::{Session, SessionMiddleware, storage::CookieSessionStore, SessionExt};
-use actix_cors::Cors;
-use actix_web::cookie::{Key, SameSite};
-use dotenv::dotenv;
-use futures::future::{ready, Ready};
-use reqwest::Client;
-use rust_embed::RustEmbed;
+use core::error;
+use std::{boxed, env};
+use actix_session::storage::SessionStore as ActixSessionStore;
+use actix_web::body::MessageBody;
+use actix_web::dev::{ServiceRequest, ServiceResponse};
+use actix_web::HttpResponse;
+use log::{LevelFilter, info, warn, error, debug};
+use env_logger::{Builder, Env};
+use actix_web::{middleware::{from_fn, Next}, get, post, web, App, http::header, cookie::Cookie, HttpServer, Responder, Error as ActixError};
+use reqwest::{Client, Response, Error as ReqwestError};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use sled::Db;
-use std::env;
 use std::sync::Arc;
-use uuid::Uuid;
+use chrono::{Duration, Local};
 
-// Embed frontend assets
-#[derive(RustEmbed)]
-#[folder = "../frontend-dist/"]
-struct FrontendAssets;
+// local stuff
+mod models;
+use crate::models::{UserSession, RedditUser, SessionStore};
 
-// AppState will hold our database and HTTP client
+#[derive(Clone, Debug)]
 struct AppState {
-    db: Arc<Db>,
-    http_client: Client,
-    reddit_client_id: String,
-    reddit_client_secret: String,
+    env_config: EnvConfig,
+    session_store: SessionStore,
+}
+
+impl AppState {
+    fn new(env_config: &EnvConfig, session_store: SessionStore) -> Self {
+        AppState {
+            env_config: env_config.clone(),
+            session_store
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct TokenRequest {
+    grant_type: String,
+    code: String,
     redirect_uri: String,
 }
 
-// User struct for storing user information
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct User {
-    id: String,
-    username: String,
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_at: u64,
+impl TokenRequest {
+    fn new(code: String, env_config: &EnvConfig) -> Self {
+        TokenRequest {
+            grant_type: "authorization_code".to_owned(),
+            code: code.clone(),
+            redirect_uri: env_config.reddit_redirect_uri.clone(),
+        }
+    }
 }
 
-// Reddit OAuth response
-#[derive(Deserialize, Debug)]
-struct RedditTokenResponse {
+#[derive(Clone, Debug, Deserialize)]
+struct TokenResponse {
     access_token: String,
     token_type: String,
     expires_in: u64,
@@ -49,401 +61,249 @@ struct RedditTokenResponse {
     scope: String,
 }
 
-// Reddit user info response
-#[derive(Deserialize, Debug)]
-struct RedditUserInfo {
-    name: String,
-    id: String,
+#[derive(Clone, Debug, Deserialize)]
+struct SessionCookie {
+    message: String,
 }
 
-// Authentication extractor
-struct AuthenticatedUser(User);
+#[derive(Clone, Debug)]
+struct EnvConfig {
+    reddit_client_id: String,
+    reddit_client_secret: String,
+    reddit_redirect_uri: String,
+    reddit_auth_uri: String,
+    reddit_access_uri: String,
+    reddit_author: String,
+    reddit_get_user_uri: String,
+    log_level: LevelFilter,
+}
 
-impl FromRequest for AuthenticatedUser {
-    type Error = Error;
-    type Future = Ready<Result<Self, Self::Error>>;
 
-    fn from_request(req: &HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
-        // Get session
-        let session = req.get_session();
-        
-        // Check if the user is authenticated via session
-        if let Ok(Some(user_json)) = session.get::<String>("user") {
-            if let Ok(user) = serde_json::from_str::<User>(&user_json) {
-                let current_time = chrono::Utc::now().timestamp() as u64;
-                if user.expires_at > current_time {
-                    return ready(Ok(AuthenticatedUser(user)));
-                }
-            }
-        }
-        
-        ready(Err(actix_web::error::ErrorUnauthorized("Unauthorized")))
+impl EnvConfig {
+    fn is_empty(&self) -> bool {
+        self.reddit_redirect_uri.is_empty() || self.reddit_client_id.is_empty() || self.reddit_client_secret.is_empty() || self.reddit_access_uri.is_empty()
     }
-}
 
-// Get the Reddit authorization URL
-#[get("/api/auth-url")]
-async fn get_auth_url(data: web::Data<AppState>) -> impl Responder {
-    let state = Uuid::new_v4().to_string();
-    let auth_url = format!(
-        "https://www.reddit.com/api/v1/authorize?client_id={}&response_type=code&state={}&redirect_uri={}&duration=permanent&scope=identity",
-        data.reddit_client_id, state, data.redirect_uri
-    );
-
-    HttpResponse::Ok().json(serde_json::json!({
-        "url": auth_url,
-        "state": state
-    }))
-}
-
-// OAuth callback handler
-#[get("/api/callback")]
-async fn oauth_callback(
-    req: HttpRequest,
-    data: web::Data<AppState>,
-    session: Session,
-) -> impl Responder {
-    // Get code from query params
-    let query = req.query_string();
-    let mut query_map = std::collections::HashMap::new();
-    
-    // Manually parse the query parameters
-    for pair in query.split('&') {
-        if pair.is_empty() {
-            continue;
-        }
-        let mut parts = pair.split('=');
-        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-            query_map.insert(key.to_string(), value.to_string());
-        }
-    }
-    
-    let code = match query_map.get("code") {
-        Some(code) => code,
-        None => return HttpResponse::BadRequest().body("Missing code parameter"),
-    };
-
-    // Exchange the code for an access token
-    let params = [
-        ("grant_type", "authorization_code"),
-        ("code", code),
-        ("redirect_uri", &data.redirect_uri),
-    ];
-
-    let client = &data.http_client;
-    let token_response = match client
-        .post("https://www.reddit.com/api/v1/access_token")
-        .basic_auth(&data.reddit_client_id, Some(&data.reddit_client_secret))
-        .form(&params)
-        .send()
-        .await
-    {
-        Ok(response) => match response.json::<RedditTokenResponse>().await {
-            Ok(token_data) => token_data,
-            Err(err) => {
-                eprintln!("Failed to parse token response: {:?}", err);
-                return HttpResponse::InternalServerError().body("Failed to parse token response");
-            }
-        },
-        Err(err) => {
-            eprintln!("Token request failed: {:?}", err);
-            return HttpResponse::InternalServerError().body("Token request failed");
-        }
-    };
-
-    // Get user info from Reddit
-    let user_info = match client
-        .get("https://oauth.reddit.com/api/v1/me")
-        .header(
-            http::header::AUTHORIZATION,
-            format!("Bearer {}", token_response.access_token),
-        )
-        .header(http::header::USER_AGENT, "ab-macros:0.1.0 (by /u/USERNAME)")
-        .send()
-        .await
-    {
-        Ok(response) => match response.json::<RedditUserInfo>().await {
-            Ok(user_data) => user_data,
-            Err(err) => {
-                eprintln!("Failed to parse user info: {:?}", err);
-                return HttpResponse::InternalServerError().body("Failed to parse user info");
-            }
-        },
-        Err(err) => {
-            eprintln!("User info request failed: {:?}", err);
-            return HttpResponse::InternalServerError().body("User info request failed");
-        }
-    };
-
-    // Calculate token expiration time
-    let current_time = chrono::Utc::now().timestamp() as u64;
-    let expires_at = current_time + token_response.expires_in;
-
-    // Create user object
-    let user = User {
-        id: user_info.id,
-        username: user_info.name,
-        access_token: token_response.access_token,
-        refresh_token: token_response.refresh_token,
-        expires_at,
-    };
-
-    // Store user in the database
-    match data.db.insert(
-        format!("user:{}", user.id),
-        serde_json::to_vec(&user).unwrap(),
-    ) {
-        Ok(_) => {
-            // Store user in session
-            if let Err(err) = session.insert("user", serde_json::to_string(&user).unwrap()) {
-                eprintln!("Failed to store user in session: {:?}", err);
-                return HttpResponse::InternalServerError().body("Failed to store user in session");
-            }
-
-            // Redirect to frontend with success
-            HttpResponse::Found()
-                .append_header((http::header::LOCATION, "/"))
-                .finish()
-        }
-        Err(err) => {
-            eprintln!("Failed to store user in database: {:?}", err);
-            HttpResponse::InternalServerError().body("Failed to store user in database")
-        }
-    }
-}
-
-// Get current user info
-#[get("/api/me")]
-async fn get_me(user: Option<AuthenticatedUser>) -> impl Responder {
-    match user {
-        Some(user) => HttpResponse::Ok().json(serde_json::json!({
-            "username": user.0.username,
-            "id": user.0.id
-        })),
-        None => HttpResponse::Unauthorized().json(serde_json::json!({
-            "error": "Unauthorized",
-            "message": "You must be logged in to access this resource"
-        })),
-    }
-}
-
-// Logout endpoint
-#[post("/api/logout")]
-async fn logout(session: Session) -> impl Responder {
-    session.purge();
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": "Logged out successfully"
-    }))
-}
-
-// Protected endpoint example
-#[get("/api/protected")]
-async fn protected_endpoint(user: AuthenticatedUser) -> impl Responder {
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("Hello, {}! This is a protected endpoint.", user.0.username)
-    }))
-}
-
-// Handle embedded frontend assets
-async fn handle_embedded_assets(req: HttpRequest) -> HttpResponse {
-    let path = if req.path() == "/" {
-        // Serve index.html for root path
-        "index.html"
-    } else {
-        // Remove leading slash
-        &req.path()[1..]
-    };
-
-    // Try to find the file in embedded assets
-    match FrontendAssets::get(path) {
-        Some(content) => {
-            // Guess the MIME type based on the file extension
-            let mime_type = mime_guess::from_path(path).first_or_octet_stream();
-            
-            HttpResponse::Ok()
-                .content_type(mime_type.as_ref())
-                .body(content.data.into_owned())
-        }
-        None => {
-            // If the asset doesn't exist, try to serve index.html for client-side routing
-            match FrontendAssets::get("index.html") {
-                Some(content) => HttpResponse::Ok()
-                    .content_type("text/html")
-                    .body(content.data.into_owned()),
-                None => HttpResponse::NotFound().body("Not found"),
-            }
-        }
-    }
-}
-
-// Middleware for checking user authentication from session
-struct AuthMiddleware;
-
-impl<S, B> actix_web::dev::Transform<S, actix_web::dev::ServiceRequest> for AuthMiddleware
-where
-    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse<B>, Error = Error> + 'static + Clone,
-    S::Future: 'static + Send,
-    B: 'static,
-{
-    type Response = actix_web::dev::ServiceResponse<B>;
-    type Error = Error;
-    type Transform = AuthMiddlewareService<S>;
-    type InitError = ();
-    type Future = Ready<Result<Self::Transform, Self::InitError>>;
-
-    fn new_transform(&self, service: S) -> Self::Future {
-        ready(Ok(AuthMiddlewareService { service }))
-    }
-}
-
-pub struct AuthMiddlewareService<S> {
-    service: S,
-}
-
-impl<S> Clone for AuthMiddlewareService<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
-        }
-    }
-}
-
-impl<S, B> Service<actix_web::dev::ServiceRequest> for AuthMiddlewareService<S>
-where
-    S: Service<actix_web::dev::ServiceRequest, Response = actix_web::dev::ServiceResponse<B>, Error = Error> + 'static,
-    S::Future: 'static + Send,
-    B: 'static,
-{
-    type Response = actix_web::dev::ServiceResponse<B>;
-    type Error = Error;
-    type Future = futures::future::BoxFuture<'static, Result<Self::Response, Self::Error>>;
-
-    actix_web::dev::forward_ready!(service);
-
-    fn call(&self, req: actix_web::dev::ServiceRequest) -> Self::Future {
-        let path = req.path().to_string();
-        let service = self.service.clone();
-        
-        // Skip auth for non-API paths and public endpoints
-        if !path.starts_with("/api/") || path == "/api/auth-url" || path == "/api/callback" || path == "/api/logout" {
-            return Box::pin(service.call(req));
-        }
-        
-        // Try to get the session
-        let session = req.get_session();
-        
-        // Check for user in session
-        Box::pin(async move {
-            if let Ok(Some(user_json)) = session.get::<String>("user") {
-                if let Ok(user) = serde_json::from_str::<User>(&user_json) {
-                    let current_time = chrono::Utc::now().timestamp() as u64;
-                    if user.expires_at > current_time {
-                        // User is authenticated, add to request extensions
-                        req.extensions_mut().insert(user);
-                        return service.call(req).await;
+    fn new() -> Self {
+        let mut env_config = EnvConfig {
+            reddit_client_id: String::new(),
+            reddit_client_secret: String::new(),
+            reddit_redirect_uri: String::new(),
+            reddit_auth_uri: String::new(),
+            reddit_access_uri: String::new(),
+            reddit_author: String::new(),
+            reddit_get_user_uri: String::new(),
+            log_level: LevelFilter::Off,
+        };
+        let env_file = include_str!(".env");
+        let env_file_lines = env_file.lines();
+        for line in env_file_lines {
+            let mut line_parts = line.split("=");
+            match line_parts.next() {
+                None => panic!("[ERROR]: Invalid config file at build time"),
+                Some(part) => {
+                    match part {
+                       "REDDIT_CLIENT_ID" => env_config.reddit_client_id = line_parts.next().expect("[ERROR]: Missing reddit client id!").to_owned(),
+                       "REDDIT_CLIENT_SECRET" => env_config.reddit_client_secret = line_parts.next().expect("[ERROR]: Missing reddit client secret!").to_owned(),
+                       "REDDIT_REDIRECT_URI" => env_config.reddit_redirect_uri = line_parts.next().expect("[ERROR]: Missing reddit redirect uri!").to_owned(),
+                       "REDDIT_AUTH_URI" => env_config.reddit_auth_uri = line_parts.next().expect("[ERROR]: Missing reddit auth uri!").to_owned(),
+                       "REDDIT_ACCESS_URI" => env_config.reddit_access_uri = line_parts.next().expect("[ERORR] Missing reddit access uri!").to_owned(),
+                       "REDDIT_AUTHOR" => env_config.reddit_author = line_parts.next().expect("[ERORR] Missing reddit author").to_owned(),
+                       "REDDIT_GET_USER_URI" => env_config.reddit_get_user_uri = line_parts.next().expect("[ERORR] Missing reddit get_user uri !").to_owned(),
+                       "RUST_LOG" => match line_parts.next().expect("[ERROR]: No RUST_LOG set at build time.").to_lowercase().as_str() {
+                           "off" => env_config.log_level = LevelFilter::Off,
+                           "error" => env_config.log_level = LevelFilter::Error,
+                           "warn" => env_config.log_level = LevelFilter::Warn,
+                           "info" => env_config.log_level = LevelFilter::Info,
+                           "debug" => env_config.log_level = LevelFilter::Debug,
+                           "trace" => env_config.log_level = LevelFilter::Trace,
+                           _ => env_config.log_level = LevelFilter::Info,
+                               
+                       }
+                       _ => {},
                     }
                 }
-            }
-            
-            // Not authenticated, return 401
-            let (request, _) = req.into_parts();
-            let response = HttpResponse::Unauthorized()
-                .json(serde_json::json!({
-                    "error": "Unauthorized",
-                    "message": "You must be logged in to access this resource"
-                }));
 
-            // Convert to expected body type
-            Ok(actix_web::dev::ServiceResponse::new(
-                request, 
-                response.map_into_boxed_body()
-            ))
-        })
+            }
+                
+        }
+        if env_config.is_empty() {
+            panic!("[ERROR]: Missing key .env values at build time");
+        }
+        env_config
+    }
+}
+
+#[derive(Debug)]
+struct RedditLoginError(String);
+
+impl Error for RedditLoginError {}
+
+impl fmt::Display for RedditLoginError {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+      write!(f, "{}", self.0)
+  }
+}
+
+async fn get_reddit_access_token(auth_code: String, env_config: &EnvConfig) -> Result<TokenResponse, Box<dyn Error>> {
+    let client = Client::new();
+    let token_request = TokenRequest::new(auth_code, env_config);
+    info!("[TOKEN REQUEST]: {:?}", token_request);
+    let token_result = client.post(env_config.reddit_access_uri.clone())
+        .basic_auth(env_config.reddit_client_id.clone(), Some(env_config.reddit_client_secret.clone()))
+        .header("User-Agent", env_config.reddit_author.clone())
+        .form(&token_request);
+    info!("[ACCESS TOKEN REQUEST]: {:?}", token_result);
+    let token_result = token_result.send().await;
+    match token_result {
+        Err(e) => Err(Box::new(RedditLoginError(e.to_string()))), 
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.json::<TokenResponse>().await {
+                    Err(e) => Err(Box::new(RedditLoginError(e.to_string()))),
+                    Ok(token_data) => {
+                        info!("[SUCCESS]: Obtained reddit access token.");
+                        Ok(token_data)
+                    }
+                }
+            } else {
+                let error_msg = format!("[ERROR]: Reddit token exchange failed with status: {}", response.status());
+                error!("{}", error_msg);
+                Err(Box::new(RedditLoginError(error_msg)))
+            }
+        }
+    }
+}
+
+async fn get_reddit_user(token_response: TokenResponse, env_config: &EnvConfig) -> Result<UserSession, Box<dyn Error>> {
+    let client = Client::new();
+    let reddit_user = client.get(env_config.reddit_get_user_uri.clone())
+        .bearer_auth(token_response.access_token.clone())
+        .header("User-Agent", env_config.reddit_author.clone())
+        .send()
+        .await?
+        .json::<RedditUser>()
+        .await?;
+    let right_now = Local::now();
+    let expiration_time = Duration::seconds(token_response.expires_in as i64);
+    let user_session = UserSession {
+        reddit_user,
+        reddit_access_token: token_response.access_token,
+        reddit_refresh_token: token_response.refresh_token,
+        expires_at: right_now + expiration_time,
+    };
+    info!("[INFO]: User session: {:?}", user_session);
+    Ok(user_session)
+}
+
+async fn auth_middleware(req: ServiceRequest, next: Next<impl MessageBody>) -> Result<ServiceResponse<impl MessageBody>, ActixError> {
+    match req.cookie("session") {
+        None => error!("[ERROR]: no session cookie found! "),
+        Some(cookie) => {
+            info!("[SUCCESS]: session cookie: {:?}", cookie)
+
+        },
+    };
+    next.call(req).await
+}
+
+#[get("/protected")]
+async fn hello() -> impl Responder {
+    info!("[INFO]: Hello world!");
+    HttpResponse::Ok().body("Hello world!")
+}
+
+#[post("/echo")]
+async fn echo(req_body: String) -> impl Responder {
+    info!("[INFO]: echo!");
+    HttpResponse::Ok().body(req_body)
+}
+
+async fn manual_hello() -> impl Responder {
+    info!("[INFO]: manual hello!");
+    HttpResponse::Ok().body("Hey there!")
+}
+
+#[get("/auth/success")]
+async fn auth_success(data: web::Data<AppState>) -> impl Responder {
+    HttpResponse::Ok()
+}
+
+// // Route to initiate the OAuth flow
+#[get("/login/reddit")]
+async fn reddit_login(data: web::Data<AppState>) -> impl Responder {
+    // Create the Reddit authorization URL
+    // client_id={}&response_type=code&state=randomstate&redirect_uri={}&duration=permanent&scope=identity
+    let auth_url = format!("{}client_id={}&response_type=code&state=randomstate&redirect_uri={}&duration=permanent&scope=identity",
+        data.env_config.reddit_auth_uri,
+        data.env_config.reddit_client_id, data.env_config.reddit_redirect_uri
+    );
+    info!("[AUTH URL]: {}", auth_url);
+    // Redirect the user to Reddit's authorization page
+    HttpResponse::Found()
+        .insert_header((header::LOCATION, auth_url))
+        .finish()
+}
+
+#[get("/login/reddit/callback")]
+async fn reddit_login_callback(query: web::Query<HashMap<String,String>>, data: web::Data<AppState>) -> impl Responder {
+    info!("[INFO]: Received callback query: {:?}", query);
+    let code = query.get("code");
+    let state = query.get("state");
+    info!("Code: {:?}, State: {:?}", code, state);
+    match code {
+        None => HttpResponse::BadRequest().finish(),
+        Some(code_value) => {
+            // get access token to fetch username
+            match get_reddit_access_token(code_value.to_string(), &data.env_config).await {
+                Err(_e) => HttpResponse::InternalServerError().finish(),
+                Ok(token) => {
+                    println!("token: {:?}", token);
+                    // get reddit username
+                    match get_reddit_user(token, &data.env_config).await {
+                        Err(_e) => HttpResponse::InternalServerError().finish(),
+                        Ok(session) => {
+                            // save user session on backend
+                            match data.session_store.save_session(&session.reddit_user.id, &session).await {
+                                Err(_e) => HttpResponse::InternalServerError().finish(),
+                                Ok(_) => {
+                                    // set cookie up
+                                    info!("[SUCCESS]: User session successfully created!");
+                                    HttpResponse::Ok().finish()
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        } 
     }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Load environment variables from .env file
-    dotenv().ok();
-
-    // Initialize logger
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-
-    // Get environment variables
-    let reddit_client_id = env::var("REDDIT_CLIENT_ID").expect("REDDIT_CLIENT_ID must be set");
-    let reddit_client_secret = env::var("REDDIT_CLIENT_SECRET").expect("REDDIT_CLIENT_SECRET must be set");
-    let redirect_uri = env::var("REDDIT_REDIRECT_URI").expect("REDDIT_REDIRECT_URI must be set");
-    let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    
-    // Generate a secure key for sessions (ensure it's at least 32 bytes)
-    let secret_key = env::var("SECRET_KEY").unwrap_or_else(|_| {
-        // Generate a key with enough entropy
-        format!("{}{}{}", Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
-    });
-    
-    // Ensure key is at least 32 bytes
-    let mut key_data = secret_key.as_bytes().to_vec();
-    if key_data.len() < 32 {
-        key_data.resize(32, 0);
-    }
-
-    // Open Sled database
-    let db = Arc::new(
-        sled::open("data.db").expect("Failed to open database"),
-    );
-
-    // Create HTTP client
-    let http_client = Client::new();
-
-    // Create app state
-    let app_state = web::Data::new(AppState {
-        db,
-        http_client,
-        reddit_client_id,
-        reddit_client_secret,
-        redirect_uri,
-    });
-
-    println!("Starting server at http://{}:{}", host, port);
-
-    // Start HTTP server
+    let env_config = EnvConfig::new();
+    // setup logging 
+    Builder::new()
+        .filter_level(env_config.log_level)
+        .init();
+    let session_store = SessionStore::new("user-sessions")?;
+    let app_state = web::Data::new(AppState::new(&env_config, session_store));
+    info!("[INFO] Environment config: {:?}", env_config);
     HttpServer::new(move || {
-        // Configure CORS
-        let cors = Cors::default()
-            .allowed_origin("http://localhost:8080")
-            .allowed_methods(vec!["GET", "POST"])
-            .allowed_headers(vec![http::header::AUTHORIZATION, http::header::CONTENT_TYPE])
-            .supports_credentials()
-            .max_age(3600);
-
-        // Create cookie key for session
-        let key = Key::from(&key_data);
-
         App::new()
-            .wrap(middleware::Logger::default())
-            .wrap(
-                SessionMiddleware::builder(CookieSessionStore::default(), key.clone())
-                    .cookie_secure(false) // Set to true in production with HTTPS
-                    .cookie_http_only(true)
-                    .cookie_same_site(SameSite::Lax)
-                    .build(),
-            )
-            .wrap(cors)
             .app_data(app_state.clone())
-            .service(get_auth_url)
-            .service(oauth_callback)
-            .service(get_me)
-            .service(logout)
-            .service(protected_endpoint)
-            // Default route handler for embedded frontend assets
-            .default_service(web::to(handle_embedded_assets))
+            .service(echo)
+            .service(reddit_login)
+            .service(reddit_login_callback)
+            .service(
+                web::scope("/protected")
+                    .wrap(from_fn(auth_middleware))
+                    .service(hello)
+            )
+            .route("/hey", web::get().to(manual_hello))
     })
-    .bind(format!("{}:{}", host, port))?
+    .bind(("127.0.0.1", 8081))?
     .run()
     .await
 }

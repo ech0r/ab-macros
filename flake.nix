@@ -3,14 +3,17 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
+    nixvim.url = "github:ech0r/nixvim";
   };
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, ...  }: 
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, nixvim, ...  }: 
     flake-utils.lib.eachDefaultSystem
       (system:
         let
+          nvim = nixvim.packages.x86_64-linux.default;
           overlays = [ (import rust-overlay) ];
           pkgs = import nixpkgs {
             inherit system overlays;
+            inherit nixvim;
             config.allowUnfree = true;
           };
         in
@@ -28,6 +31,9 @@
                 ];
               })
             ] ++ [
+              # Editor
+              nvim 
+
               # System dependencies
               pkg-config
               openssl
